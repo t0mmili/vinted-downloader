@@ -305,7 +305,7 @@ def main() -> int:
     download_seller_profile: bool = args.seller
     if download_seller_profile:
         raise RuntimeError("--seller option is disabled for now")
-    output_dir: Path = Path(args.output_dir)
+    output_dir: Path = Path(args.output)
 
     if args.save_in_dir:
         subdir_name = extract_item_slug_from_url(item_url)
@@ -318,7 +318,7 @@ def main() -> int:
     downloader.download(
         item_url=item_url,
         download_seller_profile=download_seller_profile,
-        download_all_seller_items=args.all,
+        download_all_seller_items=args.all_items,
     )
 
     return 0
@@ -426,38 +426,45 @@ def get_item_id(item_url: str) -> int:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="vinted_downloader")
+    parser = argparse.ArgumentParser(
+        prog="vinted_downloader",
+        description="Download item images and seller data from Vinted"
+    )
 
-    parser.add_argument("item_url", default="", help="url of an item")
     parser.add_argument(
-        "-o",
-        dest="output_dir",
-        required=False,
+        "item_url",
+        help="URL of the item to download"
+    )
+
+    parser.add_argument(
+        "-o", "--output",
         default=".",
-        help="output directory (default is current directory)",
+        help="Directory where files will be saved (default: current directory)"
     )
+
     parser.add_argument(
-        "--seller",
-        default=False,
+        "-s", "--seller",
         action="store_true",
-        help="download seller picture profile",
+        help="Also download the seller's profile picture"
     )
+
     parser.add_argument(
-        "--all",
-        default=False,
+        "-a", "--all-items",
         action="store_true",
-        help="download all seller items",
+        help="Download all items listed by the seller"
     )
+
     parser.add_argument(
-        "--save-in-dir",
-        default=False,
+        "-d", "--save-in-dir",
         action="store_true",
         help=(
-            "save files in a subdirectory of the `-o` option directory. "
-            "The subdirectory is named with the item title and id"
-        ),
+            "Save files in a separate subdirectory of the output directory. "
+            "The folder name is based on the item id and title."
+        )
     )
+
     args = parser.parse_args()
+
     return args
 
 
