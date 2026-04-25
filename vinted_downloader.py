@@ -14,7 +14,8 @@ from urllib.parse import urlparse
 
 import requests
 
-USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+AUTHOR_EMAIL = "contact@boberle.com"
+ERROR_FILE = "vinted_product_downloader_error.txt"
 SNAP = [1, 2, 3]
 
 
@@ -22,18 +23,14 @@ SNAP = [1, 2, 3]
 class Summary:
     source: str
     title: str
-    description: str
     seller: str
     seller_id: int
-    last_logged_in: str
 
     def __str__(self) -> str:
         summary = f"source: {self.source}\n"
         summary += f"title: {self.title}\n"
-        summary += f"description: {self.description}\n"
         summary += f"seller: {self.seller}\n"
         summary += f"seller id: {self.seller_id}\n"
-        summary += f"seller last logged in: {self.last_logged_in}\n"
         return summary
 
 
@@ -52,37 +49,59 @@ class Downloader:
         client = self.client_factory.build(vinted_tld=vinted_tld)
         details = Details(client.download_item_details(item_url=item_url))
 
-        self.writer.write_text(Path("item.json"), json.dumps(details.data))
-        summary = Summary(
-            source=item_url,
-            title=details.title,
-            description=details.description,
-            seller=details.seller,
-            seller_id=details.seller_id,
-            last_logged_in=details.seller_last_logged_in,
-        )
-        self.writer.write_text(Path("item_summary"), str(summary))
-
         if download_all_seller_items:
-            items_id = []
             data = client.download_items_details(details.seller_id)
 
             for item in data["items"]:
-                items_id.append(item["id"])
+                item_id = item["id"]
+                item_dir = Path(str(item_id))
+                summary = Summary(
+                    source=item["url"],
+                    title=item["title"],
+                    seller=item["user"]["login"],
+                    seller_id=item["user"]["id"]
+                )
 
-            for item_id in items_id:
-                details = Details(client.download_item_details(item_url=item_url))
+                # Write item data to the item's subfolder
+                self.writer.write_text(
+                    item_dir / "item.json", json.dumps(item)
+                )
+                self.writer.write_text(
+                    item_dir / "item_summary", str(summary)
+                )
+
+                # Extract photo URLs directly from the API response
+                photo_urls = [
+                    photo["full_size_url"] for photo in item.get("photos", [])
+                ]
+
+                # Get extension from URL
+                photo_url = photo_urls[0]
+                extension = Path(urlparse(photo_url).path).suffix
+
                 for i, photo_bytes in enumerate(
-                    client.download_photos(*details.full_size_photo_urls)
+                    client.download_photos(*photo_urls)
                 ):
                     self.writer.write_bytes(
-                        Path(f"photo_{i}_{item_id}.webp"), photo_bytes
+                        item_dir / f"photo_{i:02d}{extension}", photo_bytes
                     )
         else:
+            summary = Summary(
+                source=item_url,
+                title=details.title,
+                seller=details.seller,
+                seller_id=details.seller_id
+            )
+
+            self.writer.write_text(Path("item.json"), json.dumps(details.data))
+            self.writer.write_text(Path("item_summary"), str(summary))
+
             for i, photo_bytes in enumerate(
                 client.download_photos(*details.full_size_photo_urls)
             ):
-                self.writer.write_bytes(Path(f"photo_{i}.webp"), photo_bytes)
+                self.writer.write_bytes(
+                    Path(f"photo_{i:02d}.webp"), photo_bytes
+                )
 
         if download_seller_profile and details.seller_photo_url:
             photo_bytes = client.download_photo(details.seller_photo_url)
@@ -125,14 +144,12 @@ class VintedClient(Client):
     nap: list[int] | None = field(default_factory=lambda: SNAP)
 
     def __post_init__(self) -> None:
-        headers = {
-            "User-Agent": USER_AGENT,
-            "Accept-Language": "fr-FR,fr;q=0.5",
-        }
         self.session = requests.Session()
-        self.session.headers.update(headers)
-        # connect the first time to Vinted to get the anonymous cookie auth
-        self.session.get(f"https://www.vinted.{self.vinted_tld}")
+        self.session.headers.update({
+            "User-Agent": "Mozilla/5.0",
+        })
+        # Connect the first time to get the anonymous cookie auth
+        self.session.get(f"https://www.vinted.{self.vinted_tld}") 
 
     def download_item_details(self, item_url: str) -> dict[str, Any]:
         self._nap()
@@ -142,20 +159,28 @@ class VintedClient(Client):
             response_text = response.text
             data = extract_details_from_html_with_dto(response_text)
             if data is None:
-                data = extract_details_from_html_with_full_size_url(response_text)
+                data = extract_details_from_html_with_full_size_url(
+                    response_text
+                )
                 if data is None:
-                    raise ValueError("Unable to extract product details from the HTML")
+                    raise ValueError(
+                        "Unable to extract product details from the HTML"
+                    )
                 print("Found data with the 'full_size_url' method")
             else:
                 print("Found data with the 'itemDto' method")
             return data
         except json.JSONDecodeError:
-            open("vinted_product_downloader_error.txt", "wb").write(response.content)
+            open(
+                "vinted_product_downloader_error.txt", "wb"
+            ).write(response.content)
             print(
                 "=========\n"
                 "An error occurred while decoding the product details.\n"
-                "The content of the response has been saved in vinted_product_downloader_error.txt.\n"
-                "You can review the file, or send it to the developers at contact@boberle.com\n"
+                "The content of the response has been saved in "
+                f"{ERROR_FILE}.\n"
+                "You can review the file, or send it to the developers at "
+                f"{AUTHOR_EMAIL}\n"
                 "for further assistance.\n"
                 "========="
             )
@@ -163,8 +188,21 @@ class VintedClient(Client):
 
     def download_items_details(self, profile_id: int) -> dict[str, Any]:
         self._nap()
-        url = f"https://www.vinted.{self.vinted_tld}/api/v2/users/{profile_id}/items?localize=false"  # https://www.vinted.fr/api/v2/users/88485782/items?page=1&per_page=20&order=relevance
-        data = cast(dict[str, Any], self.session.get(url).json())
+        self.session.get(
+            f"https://www.vinted.{self.vinted_tld}/member/{profile_id}"
+        )
+        url = (
+            f"https://www.vinted.{self.vinted_tld}/api/v2/wardrobe/{profile_id}/items"
+        )
+        response = self.session.get(
+            url,
+            headers={
+                "Accept": "application/json, text/plain, */*",
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": f"https://www.vinted.{self.vinted_tld}/member/{profile_id}",
+            }
+        )
+        data = cast(dict[str, Any], response.json())
         return data
 
     def _nap(self) -> None:
@@ -212,11 +250,17 @@ class FileWriter(Writer):
 
     def write_text(self, file: Path, data: str) -> None:
         self._create()
-        (self.output_dir / file).write_text(data, encoding="utf-8")
+        full_path = self.output_dir / file
+        # Create parent directories if they don't exist
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_text(data, encoding="utf-8")
 
     def write_bytes(self, file: Path, data: bytes) -> None:
         self._create()
-        (self.output_dir / file).write_bytes(data)
+        full_path = self.output_dir / file
+        # Create parent directories if they don't exist
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        full_path.write_bytes(data)
 
     def _create(self) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -231,15 +275,8 @@ class Details:
         return str(self.data["title"])
 
     @property
-    def description(self) -> str:
-        return str(self.data.get("description", ""))
-
-    @property
     def seller(self) -> str:
-        try:
-            return str(self.data["user"]["login"])
-        except KeyError:
-            return ""
+        return str(self.data["login"])
 
     @property
     def seller_id(self) -> int:
@@ -247,16 +284,6 @@ class Details:
             return cast(int, self.data["user"]["id"])
         except KeyError:
             return cast(int, self.data["seller_id"])
-
-    @property
-    def seller_last_logged_in(self) -> str:
-        try:
-            return str(
-                self.data["user"].get("last_logged_on_ts")
-                or self.data["user"]["last_loged_on_ts"]
-            )
-        except KeyError:
-            return ""
 
     @property
     def full_size_photo_urls(self) -> list[str]:
@@ -285,7 +312,8 @@ def main() -> int:
         output_dir /= subdir_name
 
     downloader = Downloader(
-        client_factory=VintedClientFactory(), writer=FileWriter(output_dir=output_dir)
+        client_factory=VintedClientFactory(),
+        writer=FileWriter(output_dir=output_dir)
     )
     downloader.download(
         item_url=item_url,
@@ -296,7 +324,9 @@ def main() -> int:
     return 0
 
 
-def extract_details_from_html_with_dto(html_content: str) -> dict[str, Any] | None:
+def extract_details_from_html_with_dto(
+        html_content: str
+    ) -> dict[str, Any] | None:
     def extract_item_dto_data(html: str) -> str | None:
         regex = r"<script\b[^>]*>self\.__next_f\.push\((.*?)\)<\/script>"
         matches = re.finditer(regex, html, re.DOTALL)
@@ -330,11 +360,14 @@ def extract_details_from_html_with_dto(html_content: str) -> dict[str, Any] | No
     return None
 
 
-def extract_details_from_html_with_full_size_url(html_content: str) -> dict[str, Any] | None:
-
-    def get_item_dict(data: dict[str, Any] | list[Any]) -> dict[str, Any] | None:
-        if isinstance(data, dict) and "item" in data:
-            return cast(dict[str, Any], data["item"])
+def extract_details_from_html_with_full_size_url(
+        html_content: str
+    ) -> dict[str, Any] | None:
+    def get_item_dict(
+            data: dict[str, Any] | list[Any]
+        ) -> dict[str, Any] | None:
+        if isinstance(data, dict) and "value" in data:
+            return cast(dict[str, Any], data["value"])
 
         if isinstance(data, list):
             for item in data:
@@ -351,20 +384,36 @@ def extract_details_from_html_with_full_size_url(html_content: str) -> dict[str,
             assert False, "Invalid data type"
         return None
 
-    regex = r"<script\b[^>]*>self\.__next_f\.push\((.*?)\)<\/script>"
+    regex = r"self\.__next_f\.push\(\[(.*?)\]\)"
     matches = re.finditer(regex, html_content, re.DOTALL)
+
     for match in matches:
-        if "full_size_url" not in match.group(1):
+        try:
+            # Wrap payload in [] to make it a valid JSON list for parsing
+            raw_payload = f"[{match.group(1)}]"
+            payload_parts = json.loads(raw_payload)
+
+            for part in payload_parts:
+                if not isinstance(part, str):
+                    continue
+                
+                # Strip Next.js payload prefix to get the valid JSON structure
+                json_str = re.sub(r"^[a-f0-9]+:", "", part)
+                
+                try:
+                    data = json.loads(json_str)
+                    found = get_item_dict(data)
+                    
+                    if found:
+                        # VALIDATION: Check if photos is a list
+                        if isinstance(found.get('photos'), list):
+                            return found
+                        else:
+                            continue
+                except json.JSONDecodeError:
+                    continue
+        except Exception:
             continue
-        outer_list: list[Any] = json.loads(match.group(1))
-        for outer_item in outer_list:
-            if not isinstance(outer_item, str):
-                continue
-            item, n = re.subn(r"^[a-zA-Z0-9]+:\[", "[", outer_item)
-            if n > 0:
-                found = get_item_dict(json.loads(item))
-                if found:
-                    return found
     return None
 
 
